@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">TalabaMakon</string>
+    <!-- Firebase Hosting manzilingiz. GitHub'da APP_URL oʻzgaruvchisi berilsa, yigʻishda avtomatik almashtiriladi. -->
+    <string name="app_url" translatable="false">https://talabamakon.web.app</string>
+</resources>

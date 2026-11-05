@@ -1,0 +1,127 @@
+rules_version = '2';
+
+// TalabaMakon — Firestore xavfsizlik qoidalari.
+// Har bir huquq shu yerda tekshiriladi: sahifa kodi oʻzgartirilsa ham, server bu qoidalardan oʻtkazmaydi.
+//
+// users/{uid}.status: "pending" (soʻrov yuborgan) | "active" (huquq berilgan)
+// users/{uid}.owner:  true — bosh administrator (faqat Firebase Console orqali belgilanadi)
+// users/{uid}.perms:  {stat_all, stat_fac, facs[], grp, groups[], dorm, dorms[], struct, approve, import, users}
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signed() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function me() { return get(userPath(request.auth.uid)).data; }
+    function hasDoc() { return signed() && exists(userPath(request.auth.uid)); }
+    function isOwner() { return hasDoc() && me().get('owner', false) == true; }
+    function active() { return hasDoc() && (me().get('status', '') == 'active' || me().get('owner', false) == true); }
+    function can(k) { return active() && (me().get('owner', false) == true || me().get('perms', {}).get(k, false) == true); }
+    function myList(k) { return me().get('perms', {}).get(k, []); }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    function publicPath() { return /databases/$(database)/documents/meta/public; }
+    function registerOpen() {
+      return !exists(publicPath()) || get(publicPath()).data.get('allowRegister', true) == true;
+    }
+
+    // huquq beruvchi faqat oʻzida bor huquqni bera oladi (tyutor/dekan/tarbiyachi vazifalari bundan mustasno)
+    function grantOk() {
+      let np = request.resource.data.get('perms', {});
+      return isOwner() || (
+        (np.get('stat_all', false) == false || can('stat_all')) &&
+        (np.get('import', false) == false || can('import')) &&
+        (np.get('users', false) == false || can('users')) &&
+        (np.get('struct', false) == false || can('struct')) &&
+        (np.get('approve', false) == false || can('approve')));
+    }
+    function validName(d) {
+      return d.name is string && d.name.size() >= 5 && d.name.size() <= 80
+          && d.username is string && d.username.matches('^[a-z0-9._-]{3,40}$');
+    }
+
+    // ---------------- foydalanuvchilar
+    match /users/{uid} {
+      allow read: if signed() && (request.auth.uid == uid || can('users'));
+
+      allow create: if signed() && validName(request.resource.data) && request.resource.data.get('owner', false) == false && (
+          // oʻzi soʻrov yuboradi
+          (request.auth.uid == uid && request.resource.data.status == 'pending'
+             && request.resource.data.get('perms', {}).size() == 0 && registerOpen())
+          // administrator hisob ochadi
+       || (can('users') && request.auth.uid != uid && request.resource.data.status == 'active' && grantOk()));
+
+      allow update: if can('users') && request.auth.uid != uid
+          && resource.data.get('owner', false) == false
+          && request.resource.data.get('owner', false) == false
+          && request.resource.data.username == resource.data.username
+          && validName(request.resource.data)
+          && (isOwner() || resource.data.get('perms', {}).get('users', false) == false)
+          && grantOk();
+
+      allow delete: if signed() && (
+          (request.auth.uid == uid && resource.data.status == 'pending')
+       || (can('users') && request.auth.uid != uid && resource.data.get('owner', false) == false
+             && (isOwner() || resource.data.get('perms', {}).get('users', false) == false)));
+    }
+
+    // ---------------- umumiy sozlamalar (kirish sahifasi oʻqiydi)
+    match /meta/public {
+      allow read: if true;
+      allow write: if can('users');
+    }
+    match /meta/{doc} {
+      allow read: if active();
+      allow write: if (doc == 'org' && can('import')) || (doc == 'facs' && (can('struct') || can('import')));
+    }
+
+    // ---------------- guruhlar va talabalar
+    match /groups/{gid} {
+      allow read: if active() && (
+          can('stat_all') || can('dorm') || can('struct') || can('import') || can('users')
+       || (can('stat_fac') && resource.data.fac in myList('facs'))
+       || gid in myList('groups'));
+      allow create: if can('import') || can('struct');
+      allow delete: if can('import') || (can('struct') && resource.data.students.size() == 0);
+      allow update: if can('import') || can('struct')
+          // huquq beruvchi faqat tyutor ismini yangilaydi
+       || (can('users') && changed().hasOnly(['tutor']))
+          // tyutor faqat oʻz guruhidagi talabalar turar joyini oʻzgartiradi, talaba qoʻsha/oʻchira olmaydi
+       || (can('grp') && gid in myList('groups') && changed().hasOnly(['students', 'updatedAt'])
+             && request.resource.data.students.size() == resource.data.students.size());
+    }
+
+    // ---------------- yotoqxonalar
+    match /dorms/{did} {
+      allow read: if active();
+      allow create: if can('struct') || can('import');
+      allow delete: if can('import');
+      allow update: if can('import')
+          // direktor: tasdiqlash / rad etish
+       || (can('approve') && changed().hasOnly(['rooms', 'draft', 'approved']))
+          // tarbiyachi: joylashtirish va qoralama; xonalarni oʻzi joriy eta olmaydi
+       || (can('dorm') && did in myList('dorms') && changed().hasOnly(['assign', 'draft'])
+             && (request.resource.data.draft == null || request.resource.data.draft.status in ['draft', 'pending']))
+       || (can('users') && changed().hasOnly(['tarb']));
+    }
+
+    // ---------------- yoʻqlama
+    match /att/{aid} {
+      allow read: if active();
+      allow create, update: if can('import')
+          || (can('dorm') && request.resource.data.dorm in myList('dorms') && request.resource.data.date is string);
+      allow delete: if can('import');
+    }
+
+    // ---------------- harakatlar jurnali (faqat qoʻshiladi, oʻzgartirilmaydi)
+    match /audit/{id} {
+      allow create: if signed() && request.resource.data.uid == request.auth.uid
+          && request.resource.data.action is string && request.resource.data.action.size() < 40;
+      allow read: if can('users');
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

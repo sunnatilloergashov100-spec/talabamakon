@@ -1,0 +1,11 @@
+{
+  "name": "TalabaMakon",
+  "short_name": "TalabaMakon",
+  "description": "Talabalar turar joyi nazorati",
+  "lang": "uz",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EDF1F0",
+  "theme_color": "#0D6772",
+  "icons": [{ "src": "logo.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
